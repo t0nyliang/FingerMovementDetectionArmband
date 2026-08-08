@@ -32,27 +32,38 @@ If a sensor cannot be read, its values are sent as `nan` while the remaining
 sensors continue updating. The firmware retries unavailable sensors once per
 second. The plot also reports sequence gaps so serial data loss is visible.
 
+To read the BNO085 and all four MLX90393 sensors from one ESP32, upload
+`motion_pipeline/firmware/bno085_uart_rvc.ino` instead. It emits the same
+`FRAME` packets plus `MOTION` packets; the existing plot ignores the motion
+packets.
+
 Legacy `SAMPLE` and `DATA` packets are still accepted, but only Sensor 0 will
 contain data when using those formats.
 
 ## Calibration and detection
 
 The minimal teaching pipeline consumes all twelve channels in each `FRAME`.
-It records two-second examples of `rest`, `wrist_up`, `spread`, and `fist`.
-Each example is trimmed by half a second at both edges, median-filtered, reduced
-to 12 signed mean changes plus 12 RMS magnitudes, and stored with normalization
-statistics for K-nearest neighbors (KNN) lookup.
+It records ten fresh, wall-clock-timed two-second examples of `rest`,
+`wrist_up`, `spread`, and `fist`, discarding serial frames buffered during each
+countdown and resampling each capture to 50 Hz.
+Each example contributes overlapping 300 ms windows from its clean center.
+The windows use a causal five-sample moving average and are reduced to 12
+signed mean changes plus 12 RMS magnitudes for K-nearest neighbors (KNN)
+lookup.
 
 ```powershell
 cd .\calibration_pipeline
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m eflesh_calibration calibrate --port COM3
+.\.venv\Scripts\python.exe -m eflesh_calibration recalibrate --port COM3 --gesture spread
 .\.venv\Scripts\python.exe -m eflesh_calibration live --port COM3
 ```
 
 All four sensors are required. The live command collects a fresh relaxed
-baseline before classifying a rolling one-second window every 0.1 seconds.
+baseline, uses ESP32 timestamps to resample a rolling 360 ms sensor history,
+and predicts once per physical frame. A label is published after two
+consecutive matching predictions.
 
 See [calibration_pipeline/README.md](calibration_pipeline/README.md) for the
 guided capture steps and the intentionally simplified design.

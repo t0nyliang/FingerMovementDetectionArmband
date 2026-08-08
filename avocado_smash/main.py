@@ -241,7 +241,6 @@ class AvocadoSmash:
         self.particles: list[Particle] = []
         self.score = 0
         self.combo = 0
-        self.lives = 5
         self.elapsed = 0.0
         self.spawn_timer = self.scaled_interval(0.35)
         self.spawn_interval = self.scaled_interval(1.05)
@@ -336,12 +335,8 @@ class AvocadoSmash:
             for target in missed:
                 self.create_particles(TRACK_CENTER_X, target.y, target.action, gentle=True)
             self.targets = [target for target in self.targets if target not in missed]
-            self.lives -= len(missed)
             self.combo = 0
             self.flash_message("MISSED")
-            if self.lives <= 0:
-                self.state = "game_over"
-                self.flash_message("DONE")
 
         self.update_particles(dt)
 
@@ -435,7 +430,7 @@ class AvocadoSmash:
         title = self.font_xl.render("AVOCADO SMASH", True, WHITE)
         self.screen.blit(title, (64, 24))
 
-        stats = f"SCORE {self.score:05d}    COMBO {self.combo:02d}    LIVES {max(0, self.lives)}"
+        stats = f"SCORE {self.score:05d}    COMBO {self.combo:02d}    LIVES ∞"
         if self.speed_multiplier != 1.0:
             stats += f"    SPEED {self.speed_multiplier:.2f}x"
         stats_surf = self.font_md.render(stats, True, COUNTER)

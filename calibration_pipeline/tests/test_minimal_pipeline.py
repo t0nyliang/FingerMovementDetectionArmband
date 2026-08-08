@@ -11,28 +11,45 @@ import pytest
 from eflesh_calibration.app import (
     CALIBRATION_CAPTURE_SAMPLES,
     CALIBRATION_CAPTURE_SECONDS,
+    CALIBRATION_CLEAN_SAMPLES,
     CALIBRATION_EDGE_SAMPLES,
-    CALIBRATION_WINDOW_SAMPLES,
+    EXAMPLES_PER_CLASS,
+    LabelStabilizer,
+    LIVE_WINDOW_SECONDS,
+    LiveWindowResampler,
+    MAX_LIVE_GAP_SECONDS,
     OnsetTracker,
-    PREDICTION_STRIDE_SAMPLES,
+    STABILITY_FRAMES,
+    TRAINING_WINDOW_STRIDE_SAMPLES,
     build_parser,
     iter_predictions,
-    read_calibration_window,
+    recalibrate,
+    read_calibration_windows,
+    read_for_duration,
+    resample_capture,
+    resample_samples,
 )
 from eflesh_calibration.knn import (
     CLASSES,
     FEATURE_COUNT,
     FILTER_SAMPLES,
     K,
+    RAW_WINDOW_SAMPLES,
     WINDOW_SAMPLES,
     feature,
     load_model,
     make_model,
+    moving_average,
     predict,
     proximity_scores,
     save_model,
 )
-from eflesh_calibration.sensor import CHANNEL_COUNT, parse_frame
+from eflesh_calibration.sensor import (
+    CHANNEL_COUNT,
+    SensorFrame,
+    parse_frame,
+    parse_sensor_frame,
+)
 
 
 def frame_line(values: np.ndarray | None = None) -> str:
@@ -43,6 +60,11 @@ def frame_line(values: np.ndarray | None = None) -> str:
 
 def test_parse_frame() -> None:
     np.testing.assert_allclose(parse_frame(frame_line()), np.arange(CHANNEL_COUNT))
+    timestamped = parse_sensor_frame(frame_line())
+    assert timestamped is not None
+    assert timestamped.sequence == 7
+    assert timestamped.device_us == 140000
+    np.testing.assert_allclose(timestamped.values, np.arange(CHANNEL_COUNT))
     assert parse_frame("READY,protocol=FRAME_v1") is None
 
     with pytest.raises(RuntimeError, match="expected 12"):
@@ -58,40 +80,97 @@ def test_parse_frame() -> None:
 def test_feature_preserves_sign_and_rms_magnitude() -> None:
     baseline = np.arange(CHANNEL_COUNT, dtype=float)
     offsets = np.linspace(-2.0, 2.0, CHANNEL_COUNT)
-    window = np.tile(baseline + offsets, (WINDOW_SAMPLES, 1))
+    window = np.tile(baseline + offsets, (RAW_WINDOW_SAMPLES, 1))
     result = feature(window, baseline)
     assert result.shape == (FEATURE_COUNT,)
     np.testing.assert_allclose(result[:CHANNEL_COUNT], offsets)
     np.testing.assert_allclose(result[CHANNEL_COUNT:], np.abs(offsets))
 
 
-def test_feature_median_filter_rejects_single_sample_spike() -> None:
-    baseline = np.zeros(CHANNEL_COUNT)
-    window = np.ones((WINDOW_SAMPLES, CHANNEL_COUNT))
-    window[WINDOW_SAMPLES // 2] = 1000.0
-    np.testing.assert_allclose(feature(window, baseline), np.ones(FEATURE_COUNT))
+def test_moving_average_is_five_sample_and_causal() -> None:
+    samples = np.repeat(
+        np.arange(8, dtype=float)[:, np.newaxis],
+        CHANNEL_COUNT,
+        axis=1,
+    )
+    result = moving_average(samples)
+    assert result.shape == (4, CHANNEL_COUNT)
+    np.testing.assert_allclose(result[:, 0], [2.0, 3.0, 4.0, 5.0])
+
+    samples[-1] = 1000.0
+    changed = moving_average(samples)
+    np.testing.assert_allclose(changed[:-1], result[:-1])
+    assert changed[-1, 0] != result[-1, 0]
 
 
-def test_calibration_capture_trims_both_edges() -> None:
+def test_calibration_capture_extracts_short_windows_from_clean_center() -> None:
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+
     class FakeSensor:
         def __init__(self) -> None:
             self.index = 0
+            self.discard_count = 0
+
+        def discard_pending(self) -> None:
+            self.discard_count += 1
 
         def read(self) -> np.ndarray:
             row = np.full(CHANNEL_COUNT, self.index, dtype=float)
             self.index += 1
+            clock.now += 0.02
             return row
 
-    window = read_calibration_window(FakeSensor())
+    sensor = FakeSensor()
+    windows = read_calibration_windows(sensor, clock)
+    assert sensor.discard_count == 1
+    assert EXAMPLES_PER_CLASS == 10
     assert CALIBRATION_CAPTURE_SECONDS == 2
-    assert CALIBRATION_CAPTURE_SAMPLES == 2 * WINDOW_SAMPLES
-    assert CALIBRATION_WINDOW_SAMPLES == WINDOW_SAMPLES
-    assert FILTER_SAMPLES % 2 == 1
-    assert window.shape == (CALIBRATION_WINDOW_SAMPLES, CHANNEL_COUNT)
-    assert np.all(window[0] == CALIBRATION_EDGE_SAMPLES)
-    assert np.all(
-        window[-1] == CALIBRATION_CAPTURE_SAMPLES - CALIBRATION_EDGE_SAMPLES - 1
+    assert CALIBRATION_CAPTURE_SAMPLES == 2 * 50
+    assert CALIBRATION_CLEAN_SAMPLES == 50
+    assert TRAINING_WINDOW_STRIDE_SAMPLES == 5
+    assert len(windows) == 8
+    assert all(
+        window.shape == (RAW_WINDOW_SAMPLES, CHANNEL_COUNT) for window in windows
     )
+    assert sensor.index in (100, 101)
+
+
+def test_timed_capture_resamples_a_slower_sensor_to_fifty_hz() -> None:
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+
+    class SlowSensor:
+        def __init__(self) -> None:
+            self.index = 0
+
+        def discard_pending(self) -> None:
+            pass
+
+        def read(self) -> np.ndarray:
+            self.index += 1
+            clock.now += 0.05
+            return np.full(CHANNEL_COUNT, clock.now)
+
+    sensor = SlowSensor()
+    capture, times = read_for_duration(sensor, 2.0, clock)
+    assert 2.0 <= clock.now < 2.05 + 1e-9
+    assert 39 <= len(capture) <= 40
+    resampled = resample_capture(capture, times)
+    assert resampled.shape == (CALIBRATION_CAPTURE_SAMPLES, CHANNEL_COUNT)
+    assert np.isfinite(resampled).all()
 
 
 def training_model() -> dict:
@@ -112,7 +191,7 @@ def test_knn_predicts_all_four_classes() -> None:
     model = training_model()
     baseline = np.zeros(CHANNEL_COUNT)
     for class_index, label in enumerate(CLASSES):
-        window = np.zeros((WINDOW_SAMPLES, CHANNEL_COUNT))
+        window = np.zeros((RAW_WINDOW_SAMPLES, CHANNEL_COUNT))
         if class_index:
             window[:, class_index - 1] = class_index * 5.0
         assert predict(model, feature(window, baseline)) == label
@@ -200,14 +279,110 @@ def test_gesture_onset_requires_a_change_or_rest_rearm() -> None:
     assert tracker.update("wrist_up") == "wrist_up"
 
 
-def test_live_predictions_use_rolling_window_at_ten_hz() -> None:
+def test_label_changes_after_two_matching_predictions() -> None:
+    stabilizer = LabelStabilizer()
+    assert STABILITY_FRAMES == 2
+    assert stabilizer.update("fist") == "rest"
+    assert stabilizer.update("fist") == "fist"
+    assert stabilizer.update("rest") == "fist"
+    assert stabilizer.update("rest") == "rest"
+
+
+def test_label_candidate_count_resets_when_prediction_changes() -> None:
+    stabilizer = LabelStabilizer()
+    assert stabilizer.update("spread") == "rest"
+    assert stabilizer.update("fist") == "rest"
+    assert stabilizer.update("fist") == "fist"
+    stabilizer.reset()
+    assert stabilizer.update("fist") == "rest"
+
+
+def sensor_frame(sequence: int, device_us: int, value: float = 0.0) -> SensorFrame:
+    return SensorFrame(
+        sequence,
+        device_us,
+        np.full(CHANNEL_COUNT, value, dtype=float),
+    )
+
+
+def test_live_window_is_360_ms_at_measured_sensor_rate() -> None:
+    builder = LiveWindowResampler()
+    window = None
+    period_us = 85_034  # approximately 11.76 Hz
+    for index in range(6):
+        window, reset = builder.add(
+            sensor_frame(index, index * period_us, index * period_us / 1_000_000)
+        )
+        assert not reset
+    assert LIVE_WINDOW_SECONDS == pytest.approx(0.36)
+    assert window is not None
+    assert window.shape == (RAW_WINDOW_SAMPLES, CHANNEL_COUNT)
+    assert np.isfinite(window).all()
+    assert window[-1, 0] - window[0, 0] == pytest.approx(0.36)
+
+
+def test_live_window_handles_uint32_wrap_and_sequence_gap() -> None:
+    builder = LiveWindowResampler()
+    assert builder.add(sensor_frame(0xFFFFFFFE, 0xFFFFFF00))[0] is None
+    window, reset = builder.add(sensor_frame(0xFFFFFFFF, 84_744))
+    assert window is None
+    assert not reset
+    window, reset = builder.add(sensor_frame(1, 169_744))
+    assert window is None
+    assert not reset
+    assert builder.elapsed_seconds == pytest.approx(0.17)
+
+
+def test_large_live_gap_resets_and_requires_fresh_window() -> None:
+    builder = LiveWindowResampler()
+    builder.add(sensor_frame(0, 0))
+    builder.add(sensor_frame(1, 85_000))
+    restarted_at = 85_000 + int((MAX_LIVE_GAP_SECONDS + 0.01) * 1_000_000)
+    window, reset = builder.add(
+        sensor_frame(2, restarted_at)
+    )
+    assert reset
+    assert window is None
+    for offset in range(1, 5):
+        window, reset = builder.add(
+            sensor_frame(2 + offset, restarted_at + offset * 85_000)
+        )
+        assert not reset
+        assert window is None
+    window, reset = builder.add(sensor_frame(7, restarted_at + 5 * 85_000))
+    assert not reset
+    assert window is not None
+
+
+def test_device_restart_resets_live_timeline() -> None:
+    builder = LiveWindowResampler()
+    builder.add(sensor_frame(500, 2_000_000))
+    builder.add(sensor_frame(501, 2_085_000))
+    window, reset = builder.add(sensor_frame(0, 10_000))
+    assert reset
+    assert window is None
+    assert builder.last_sequence == 0
+    assert builder.last_device_us == 10_000
+    assert builder.elapsed_seconds == 0.0
+
+
+def test_shared_resampler_uses_explicit_target_grid() -> None:
+    times = np.asarray([0.0, 0.1, 0.2])
+    samples = np.repeat(times[:, np.newaxis], CHANNEL_COUNT, axis=1)
+    targets = np.asarray([0.05, 0.15])
+    result = resample_samples(samples, times, targets)
+    np.testing.assert_allclose(result[:, 0], targets)
+
+
+def test_live_predictions_run_once_per_fresh_timestamped_frame() -> None:
     class FakeSensor:
         def __init__(self) -> None:
             self.read_count = 0
 
-        def read(self) -> np.ndarray:
+        def read_frame(self) -> SensorFrame:
+            sequence = self.read_count
             self.read_count += 1
-            return np.zeros(CHANNEL_COUNT)
+            return sensor_frame(sequence, sequence * 20_000)
 
     sensor = FakeSensor()
     predictions = list(
@@ -217,16 +392,72 @@ def test_live_predictions_use_rolling_window_at_ten_hz() -> None:
         )
     )
     assert predictions == ["rest", "rest", "rest"]
-    assert PREDICTION_STRIDE_SAMPLES == 5
-    assert sensor.read_count == WINDOW_SAMPLES + 2 * PREDICTION_STRIDE_SAMPLES
+    assert WINDOW_SAMPLES == 15
+    assert RAW_WINDOW_SAMPLES == 19
+    assert sensor.read_count == RAW_WINDOW_SAMPLES + 2
 
 
-def test_cli_only_exposes_calibrate_and_live() -> None:
+def test_cli_exposes_calibrate_recalibrate_and_live() -> None:
     parser = build_parser()
     assert parser.parse_args(["calibrate", "--port", "COM3"]).command == "calibrate"
     assert parser.parse_args(["live", "--port", "COM3"]).command == "live"
+    args = parser.parse_args(
+        ["recalibrate", "--port", "COM3", "--gesture", "spread"]
+    )
+    assert args.command == "recalibrate"
+    assert args.gesture == "spread"
     with pytest.raises(SystemExit):
         parser.parse_args(["validate", "--port", "COM3"])
+
+
+def test_recalibrate_replaces_only_selected_gesture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "profile.json"
+    original = training_model()
+    save_model(original, path)
+    replacement = [np.full(FEATURE_COUNT, 99.0), np.full(FEATURE_COUNT, 100.0)]
+
+    class FakeSensor:
+        def __init__(self, port: str) -> None:
+            assert port == "COM3"
+
+        def __enter__(self) -> "FakeSensor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+    monkeypatch.setattr("eflesh_calibration.app.Sensor", FakeSensor)
+    monkeypatch.setattr(
+        "eflesh_calibration.app.collect_baseline",
+        lambda sensor: np.zeros(CHANNEL_COUNT),
+    )
+    monkeypatch.setattr(
+        "eflesh_calibration.app.collect_gesture_features",
+        lambda sensor, label, baseline: replacement,
+    )
+
+    recalibrate("COM3", path, "spread")
+    updated = load_model(path)
+    for label in ("rest", "wrist_up", "fist"):
+        before = [
+            row
+            for row, row_label in zip(original["features"], original["labels"])
+            if row_label == label
+        ]
+        after = [
+            row
+            for row, row_label in zip(updated["features"], updated["labels"])
+            if row_label == label
+        ]
+        assert after == before
+    spread_rows = [
+        row
+        for row, label in zip(updated["features"], updated["labels"])
+        if label == "spread"
+    ]
+    assert spread_rows == [row.tolist() for row in replacement]
 
 
 def test_avocado_sensor_bridge_imports() -> None:

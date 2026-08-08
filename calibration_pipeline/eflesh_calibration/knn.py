@@ -12,32 +12,47 @@ import numpy as np
 from .sensor import CHANNEL_COUNT
 
 
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 SAMPLE_HZ = 50
-WINDOW_SAMPLES = 50
+WINDOW_SAMPLES = 15
 FILTER_SAMPLES = 5
+RAW_WINDOW_SAMPLES = WINDOW_SAMPLES + FILTER_SAMPLES - 1
 FEATURE_COUNT = 2 * CHANNEL_COUNT
 K = 3
 CLASSES = ("rest", "wrist_up", "spread", "fist")
 RECALIBRATE = "profile format changed; run calibration again"
 
 
-def feature(window: np.ndarray, baseline: np.ndarray) -> np.ndarray:
-    """Return signed mean changes followed by RMS magnitudes for all channels."""
-    window = np.asarray(window, dtype=float)
+def moving_average(samples: np.ndarray) -> np.ndarray:
+    """Return causal five-sample averages without padding or future samples."""
+    samples = np.asarray(samples, dtype=float)
+    if (
+        samples.ndim != 2
+        or samples.shape[0] < FILTER_SAMPLES
+        or samples.shape[1] != CHANNEL_COUNT
+    ):
+        raise ValueError(
+            f"samples must contain at least {FILTER_SAMPLES} rows of 12 sensor values"
+        )
+    if not np.isfinite(samples).all():
+        raise ValueError("moving-average input must be finite")
+    neighborhoods = np.lib.stride_tricks.sliding_window_view(
+        samples, FILTER_SAMPLES, axis=0
+    )
+    return np.mean(neighborhoods, axis=-1)
+
+
+def feature(raw_window: np.ndarray, baseline: np.ndarray) -> np.ndarray:
+    """Smooth 19 raw frames, then return 15-frame signed mean and RMS features."""
+    raw_window = np.asarray(raw_window, dtype=float)
     baseline = np.asarray(baseline, dtype=float)
-    if window.ndim != 2 or window.shape[1] != CHANNEL_COUNT:
+    if raw_window.shape != (RAW_WINDOW_SAMPLES, CHANNEL_COUNT):
         raise ValueError("window must contain rows of 12 sensor values")
     if baseline.shape != (CHANNEL_COUNT,):
         raise ValueError("baseline must contain 12 sensor values")
-    if not np.isfinite(window).all() or not np.isfinite(baseline).all():
+    if not np.isfinite(raw_window).all() or not np.isfinite(baseline).all():
         raise ValueError("feature input must be finite")
-    pad = FILTER_SAMPLES // 2
-    padded = np.pad(window, ((pad, pad), (0, 0)), mode="edge")
-    neighborhoods = np.lib.stride_tricks.sliding_window_view(
-        padded, FILTER_SAMPLES, axis=0
-    )
-    window = np.median(neighborhoods, axis=-1)
+    window = moving_average(raw_window)
     delta = window - baseline
     signed_mean = np.mean(delta, axis=0)
     rms = np.sqrt(np.mean(np.square(delta), axis=0))
@@ -62,7 +77,9 @@ def make_model(features: np.ndarray, labels: list[str]) -> dict[str, Any]:
         "format": FORMAT_VERSION,
         "sample_hz": SAMPLE_HZ,
         "window_samples": WINDOW_SAMPLES,
+        "raw_window_samples": RAW_WINDOW_SAMPLES,
         "filter_samples": FILTER_SAMPLES,
+        "filter_kind": "causal_moving_average",
         "feature_count": FEATURE_COUNT,
         "feature_layout": "signed_mean_then_rms",
         "feature_mean": feature_mean.tolist(),
@@ -133,7 +150,9 @@ def load_model(path: Path) -> dict[str, Any]:
             model.get("format") == FORMAT_VERSION
             and model.get("sample_hz") == SAMPLE_HZ
             and model.get("window_samples") == WINDOW_SAMPLES
+            and model.get("raw_window_samples") == RAW_WINDOW_SAMPLES
             and model.get("filter_samples") == FILTER_SAMPLES
+            and model.get("filter_kind") == "causal_moving_average"
             and model.get("feature_count") == FEATURE_COUNT
             and model.get("feature_layout") == "signed_mean_then_rms"
             and model.get("k") == K

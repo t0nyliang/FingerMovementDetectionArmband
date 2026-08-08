@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import time
 
@@ -12,8 +13,17 @@ BAUD = 115200
 CHANNEL_COUNT = 12
 
 
-def parse_frame(line: str) -> np.ndarray | None:
-    """Return twelve XYZ values from one FRAME line."""
+@dataclass(frozen=True)
+class SensorFrame:
+    """One timestamped four-sensor frame from the ESP32."""
+
+    sequence: int
+    device_us: int
+    values: np.ndarray
+
+
+def parse_sensor_frame(line: str) -> SensorFrame | None:
+    """Return a timestamped frame parsed from one FRAME line."""
     line = line.strip()
     if line.startswith("ERROR,"):
         raise RuntimeError(line)
@@ -35,7 +45,13 @@ def parse_frame(line: str) -> np.ndarray | None:
         raise RuntimeError("FRAME sequence and timestamp must be non-negative")
     if not all(math.isfinite(value) for value in values):
         raise RuntimeError("all four sensors must provide finite XYZ values")
-    return values
+    return SensorFrame(sequence, timestamp_us, values)
+
+
+def parse_frame(line: str) -> np.ndarray | None:
+    """Return twelve XYZ values while preserving the original parser API."""
+    frame = parse_sensor_frame(line)
+    return None if frame is None else frame.values
 
 
 class Sensor:
@@ -56,7 +72,18 @@ class Sensor:
         if self.serial is not None:
             self.serial.close()
 
+    def discard_pending(self) -> None:
+        """Discard frames buffered before a timed capture begins."""
+        if self.serial is None:
+            raise RuntimeError("serial port is not open")
+        self.serial.reset_input_buffer()
+
     def read(self, timeout_s: float = 5.0) -> np.ndarray:
+        """Return values only, preserving the original sensor API."""
+        return self.read_frame(timeout_s).values
+
+    def read_frame(self, timeout_s: float = 5.0) -> SensorFrame:
+        """Return the next complete frame including ESP32 timing metadata."""
         if self.serial is None:
             raise RuntimeError("serial port is not open")
 
@@ -65,9 +92,9 @@ class Sensor:
             raw = self.serial.readline()
             if not raw:
                 continue
-            values = parse_frame(raw.decode("utf-8", errors="ignore"))
-            if values is not None:
-                return values
+            frame = parse_sensor_frame(raw.decode("utf-8", errors="ignore"))
+            if frame is not None:
+                return frame
         raise TimeoutError(
             "no FRAME received; upload mlx90393_live.ino and close Serial Monitor"
         )

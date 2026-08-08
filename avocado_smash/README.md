@@ -31,10 +31,11 @@ python main.py --sensor-port COM3
 ```
 
 The game starts while a background worker collects the two-second relaxed
-baseline from all four sensors. It then classifies a rolling one-second window
-every 0.1 seconds. The gesture bars show continuously updated KNN proximity
-values, while the winning label drives gesture onset actions. The sensor panel
-reports `live, 10 Hz` when detection is ready.
+baseline from all four sensors. It then uses ESP32 timestamps to resample a
+rolling 360 ms sensor history before applying the causal moving average. The
+gesture bars update once per physical frame, while a label must win two
+consecutive predictions before it drives a gesture onset action. The sensor
+panel reports `live, timestamped` when detection is ready.
 
 Speed options:
 
@@ -71,6 +72,9 @@ The playfield is a single rhythm lane. Every avocado follows the same vertical
 line, and its symbol tells you which of the three motions to perform: wrist up,
 finger spread, or fist. Press the matching gesture key when the avocado
 overlaps the outlined receptor on the horizontal hit line.
+
+Lives are unlimited, so missed avocados reset the combo but do not end the
+session.
 
 The hollow avocado-shaped outline on the hit line shows the exact timing
 target, similar to a Taiko receptor. The right panel shows only the three

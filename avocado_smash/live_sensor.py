@@ -78,7 +78,7 @@ class LiveGestureClient:
             with Sensor(self.port) as sensor:
                 self._set_status("relax for 2s")
                 baseline = collect_baseline(sensor)
-                self._set_status("live, 10 Hz")
+                self._set_status("live, timestamped")
                 tracker = OnsetTracker()
                 for label, scores in iter_prediction_results(sensor, model, baseline):
                     if self._stop.is_set():
