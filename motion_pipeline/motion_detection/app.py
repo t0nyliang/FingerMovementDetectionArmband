@@ -91,12 +91,11 @@ def detect(port: str, baseline_path: Path | None, baseline_seconds: float) -> No
                 continue
 
             features = compute_features(window, baseline)
-            decision = detector.update(frame, features)
-            event = decision.event or ""
+            score, event = detector.update(features)
             print(
                 "STATE,"
-                f"{decision.sequence},{decision.device_us},{decision.state.value},"
-                f"{decision.score:.3f},{features.acceleration_rms:.3f},"
+                f"{frame.sequence},{frame.device_us},{detector.state},"
+                f"{score:.3f},{features.acceleration_rms:.3f},"
                 f"{features.orientation_speed_rms:.3f},{event}",
                 flush=True,
             )

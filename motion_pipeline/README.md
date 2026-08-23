@@ -28,12 +28,12 @@ For the firmware's default pin assignment:
 | --- | --- |
 | VIN | 3V3 |
 | GND | GND |
-| SDA, UART data out | GPIO16 (RX) |
+| SDA, UART data out | GPIO4 (RX) |
 | P0 | 3V3 |
 
 P1 remains low/default. UART-RVC is output-only for this pipeline, so the BNO085
-SCL pin and ESP32 TX connection are not used. If GPIO16 is unavailable on your
-ESP32 board, change `BNO_RX_PIN` in the firmware and use that pin instead.
+SCL pin and ESP32 TX connection are not used. The combined firmware uses GPIO4
+as `BNO_RX_PIN`.
 
 Mount the board rigidly on the wrist or back of the hand. Use pitch/roll and
 acceleration for motion detection; avoid depending on absolute yaw because the

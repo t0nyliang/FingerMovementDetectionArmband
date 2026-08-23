@@ -7,7 +7,7 @@
 // BNO085 wiring (UART-RVC mode):
 //   BNO085 VIN -> ESP32 3V3
 //   BNO085 GND -> ESP32 GND
-//   BNO085 SDA (UART data out) -> BNO_RX_PIN
+//   BNO085 SDA (UART data out) -> ESP32 GPIO4
 //   BNO085 P0 -> ESP32 3V3
 //   Leave P1 low/default. The BNO085 is not connected to the I2C mux.
 //
@@ -28,7 +28,7 @@ constexpr uint8_t SCL_PIN = 22;
 constexpr uint8_t MLX90393_ADDR = 0x18;
 constexpr uint8_t SENSOR_COUNT = 4;
 constexpr uint8_t MUX_CHANNELS[SENSOR_COUNT] = {0, 2, 5, 7};
-constexpr int8_t BNO_RX_PIN = 16;
+constexpr int8_t BNO_RX_PIN = 4;
 constexpr int8_t BNO_TX_PIN = -1;  // UART-RVC is output-only for this pipeline.
 constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t SAMPLE_RATE_HZ = 50;

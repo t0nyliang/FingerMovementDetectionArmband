@@ -48,12 +48,6 @@ def parse_sensor_frame(line: str) -> SensorFrame | None:
     return SensorFrame(sequence, timestamp_us, values)
 
 
-def parse_frame(line: str) -> np.ndarray | None:
-    """Return twelve XYZ values while preserving the original parser API."""
-    frame = parse_sensor_frame(line)
-    return None if frame is None else frame.values
-
-
 class Sensor:
     """Small context manager around a pyserial connection."""
 

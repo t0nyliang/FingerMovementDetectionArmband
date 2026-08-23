@@ -67,3 +67,25 @@ consecutive matching predictions.
 
 See [calibration_pipeline/README.md](calibration_pipeline/README.md) for the
 guided capture steps and the intentionally simplified design.
+
+## Teaching notebooks
+
+Two hardware-optional Jupyter notebooks teach the same filtering and
+classification choices used by the calibration pipeline:
+
+- [Signal filtering](notebooks/01_signal_filtering.ipynb) covers the causal
+  five-sample moving average, timing, frequency response, and signed/RMS
+  feature extraction.
+- [KNN gesture classification](notebooks/02_knn_gesture_classification.ipynb)
+  covers standardization, nearest-neighbor voting, evaluation, proximity
+  displays, and live label stabilization.
+
+Install the notebook environment and launch JupyterLab from the repository
+root:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r .\notebooks\requirements.txt
+.\.venv\Scripts\python.exe -m jupyter lab
+```
+
+See [notebooks/README.md](notebooks/README.md) for the lesson order and setup.

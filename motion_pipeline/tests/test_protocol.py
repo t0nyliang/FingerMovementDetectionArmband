@@ -5,7 +5,6 @@ import pytest
 
 from motion_pipeline.motion_detection.protocol import (
     CHANNEL_COUNT,
-    MotionFrame,
     parse_motion_frame,
 )
 
@@ -34,8 +33,3 @@ def test_parse_motion_frame_rejects_bad_rows() -> None:
         parse_motion_frame(motion_line([0.0, 0.0, 0.0, 0.0, 0.0, float("nan")]))
     with pytest.raises(RuntimeError, match="ERROR"):
         parse_motion_frame("ERROR,bno085=not_found")
-
-
-def test_motion_frame_validates_constructor_values() -> None:
-    with pytest.raises(ValueError, match="6 values"):
-        MotionFrame(0, 0, (1.0,))

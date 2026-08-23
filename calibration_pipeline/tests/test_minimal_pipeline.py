@@ -22,11 +22,10 @@ from eflesh_calibration.app import (
     STABILITY_FRAMES,
     TRAINING_WINDOW_STRIDE_SAMPLES,
     build_parser,
-    iter_predictions,
+    iter_prediction_results,
     recalibrate,
     read_calibration_windows,
     read_for_duration,
-    resample_capture,
     resample_samples,
 )
 from eflesh_calibration.knn import (
@@ -47,7 +46,6 @@ from eflesh_calibration.knn import (
 from eflesh_calibration.sensor import (
     CHANNEL_COUNT,
     SensorFrame,
-    parse_frame,
     parse_sensor_frame,
 )
 
@@ -58,23 +56,22 @@ def frame_line(values: np.ndarray | None = None) -> str:
     return "FRAME,7,140000," + ",".join(str(value) for value in values)
 
 
-def test_parse_frame() -> None:
-    np.testing.assert_allclose(parse_frame(frame_line()), np.arange(CHANNEL_COUNT))
+def test_parse_sensor_frame() -> None:
     timestamped = parse_sensor_frame(frame_line())
     assert timestamped is not None
     assert timestamped.sequence == 7
     assert timestamped.device_us == 140000
     np.testing.assert_allclose(timestamped.values, np.arange(CHANNEL_COUNT))
-    assert parse_frame("READY,protocol=FRAME_v1") is None
+    assert parse_sensor_frame("READY,protocol=FRAME_v1") is None
 
     with pytest.raises(RuntimeError, match="expected 12"):
-        parse_frame("FRAME,1,2,1,2,3")
+        parse_sensor_frame("FRAME,1,2,1,2,3")
     with pytest.raises(RuntimeError, match="non-numeric"):
-        parse_frame(frame_line().replace(",0.0,", ",bad,"))
+        parse_sensor_frame(frame_line().replace(",0.0,", ",bad,"))
     bad = np.arange(CHANNEL_COUNT, dtype=float)
     bad[4] = np.nan
     with pytest.raises(RuntimeError, match="finite"):
-        parse_frame(frame_line(bad))
+        parse_sensor_frame(frame_line(bad))
 
 
 def test_feature_preserves_sign_and_rms_magnitude() -> None:
@@ -168,7 +165,11 @@ def test_timed_capture_resamples_a_slower_sensor_to_fifty_hz() -> None:
     capture, times = read_for_duration(sensor, 2.0, clock)
     assert 2.0 <= clock.now < 2.05 + 1e-9
     assert 39 <= len(capture) <= 40
-    resampled = resample_capture(capture, times)
+    resampled = resample_samples(
+        capture,
+        times,
+        np.arange(CALIBRATION_CAPTURE_SAMPLES) / 50,
+    )
     assert resampled.shape == (CALIBRATION_CAPTURE_SAMPLES, CHANNEL_COUNT)
     assert np.isfinite(resampled).all()
 
@@ -387,11 +388,13 @@ def test_live_predictions_run_once_per_fresh_timestamped_frame() -> None:
     sensor = FakeSensor()
     predictions = list(
         itertools.islice(
-            iter_predictions(sensor, training_model(), np.zeros(CHANNEL_COUNT)),
+            iter_prediction_results(
+                sensor, training_model(), np.zeros(CHANNEL_COUNT)
+            ),
             3,
         )
     )
-    assert predictions == ["rest", "rest", "rest"]
+    assert [label for label, _scores in predictions] == ["rest", "rest", "rest"]
     assert WINDOW_SAMPLES == 15
     assert RAW_WINDOW_SAMPLES == 19
     assert sensor.read_count == RAW_WINDOW_SAMPLES + 2

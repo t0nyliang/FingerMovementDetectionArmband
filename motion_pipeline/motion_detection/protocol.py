@@ -21,14 +21,6 @@ class MotionFrame:
     device_us: int
     values: tuple[float, ...]
 
-    def __post_init__(self) -> None:
-        if len(self.values) != CHANNEL_COUNT:
-            raise ValueError(f"motion frame must contain {CHANNEL_COUNT} values")
-        if self.sequence < 0 or self.device_us < 0:
-            raise ValueError("sequence and device_us must be non-negative")
-        if not all(math.isfinite(value) for value in self.values):
-            raise ValueError("motion frame values must be finite")
-
     @property
     def vector(self) -> np.ndarray:
         """Return the six channels as a fresh float array."""

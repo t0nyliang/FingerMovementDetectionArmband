@@ -43,10 +43,6 @@ UINT32_MASK = 0xFFFFFFFF
 PROFILE_PATH = Path(__file__).resolve().parents[1] / "profile.json"
 
 
-def read_window(sensor: Sensor, count: int = RAW_WINDOW_SAMPLES) -> np.ndarray:
-    return np.stack([sensor.read() for _ in range(count)])
-
-
 def read_for_duration(
     sensor: Sensor,
     duration_s: float,
@@ -65,16 +61,6 @@ def read_for_duration(
     if len(samples) < 2:
         raise RuntimeError("not enough sensor frames received during capture")
     return np.stack(samples), np.asarray(sample_times, dtype=float)
-
-
-def resample_capture(
-    capture: np.ndarray,
-    sample_times: np.ndarray,
-    count: int = CALIBRATION_CAPTURE_SAMPLES,
-) -> np.ndarray:
-    """Interpolate a timed capture to the pipeline's nominal 50 Hz grid."""
-    target_times = np.arange(count, dtype=float) / SAMPLE_HZ
-    return resample_samples(capture, sample_times, target_times)
 
 
 def resample_samples(
@@ -118,7 +104,11 @@ def read_calibration_windows(
         CALIBRATION_CAPTURE_SECONDS,
         clock,
     )
-    capture = resample_capture(capture, sample_times)
+    capture = resample_samples(
+        capture,
+        sample_times,
+        np.arange(CALIBRATION_CAPTURE_SAMPLES) / SAMPLE_HZ,
+    )
     windows = []
     first_smoothed_index = CALIBRATION_EDGE_SAMPLES
     final_start = (
@@ -235,14 +225,6 @@ def iter_prediction_results(
         yield label, proximity_scores(model, sample)
 
 
-def iter_predictions(
-    sensor: Sensor, model: dict, baseline: np.ndarray
-) -> Iterator[str]:
-    """Classify a timestamp-resampled rolling window once per physical frame."""
-    for label, _scores in iter_prediction_results(sensor, model, baseline):
-        yield label
-
-
 class LabelStabilizer:
     """Change the published label after consecutive matching predictions."""
 
@@ -341,7 +323,7 @@ def live(port: str, profile_path: Path) -> None:
         baseline = collect_baseline(sensor)
         print("Live detection started. Press Ctrl+C to stop.")
         tracker = OnsetTracker()
-        for label in iter_predictions(sensor, model, baseline):
+        for label, _scores in iter_prediction_results(sensor, model, baseline):
             onset = tracker.update(label)
             print(f"{label:6s}" + (f"  ONSET {onset}" if onset else ""))
 
