@@ -25,6 +25,11 @@ def _angle_delta_degrees(angles: np.ndarray, reference: np.ndarray) -> np.ndarra
     return (angles - reference + 180.0) % 360.0 - 180.0
 
 
+def _rms(values: np.ndarray) -> float:
+    """Return the root-mean-square magnitude of an array."""
+    return float(np.sqrt(np.mean(np.square(values))))
+
+
 def resample_samples(
     samples: np.ndarray,
     sample_times: np.ndarray,
@@ -49,15 +54,13 @@ def resample_samples(
     if np.any(np.diff(sample_times) <= 0):
         raise ValueError("sample times must be strictly increasing")
 
-    output = []
-    for channel in range(CHANNEL_COUNT):
-        source = samples[:, channel]
-        if channel < 3:
-            # RVC orientation is reported in degrees. Unwrap before interpolation
-            # so a -179 -> +179 transition does not create a false 358-degree move.
-            source = np.rad2deg(np.unwrap(np.deg2rad(source)))
-        output.append(np.interp(target_times, sample_times, source))
-    return np.column_stack(output)
+    sources = samples.copy()
+    # RVC orientation is reported in degrees. Unwrap before interpolation so a
+    # -179 -> +179 transition does not create a false 358-degree move.
+    sources[:, :3] = np.rad2deg(np.unwrap(np.deg2rad(sources[:, :3]), axis=0))
+    return np.column_stack(
+        [np.interp(target_times, sample_times, source) for source in sources.T]
+    )
 
 
 class MotionWindowResampler:
@@ -82,21 +85,25 @@ class MotionWindowResampler:
         self.last_device_us = None
         self.elapsed_seconds = 0.0
 
+    def _is_discontinuous(self, frame: MotionFrame) -> tuple[bool, float]:
+        sequence_delta = (frame.sequence - self.last_sequence) & UINT32_MASK
+        time_delta_us = (frame.device_us - self.last_device_us) & UINT32_MASK
+        time_delta = time_delta_us / 1_000_000.0
+        return (
+            sequence_delta == 0
+            or sequence_delta >= 0x80000000
+            or time_delta_us == 0
+            or time_delta > MAX_LIVE_GAP_SECONDS,
+            time_delta,
+        )
+
     def add(self, frame: MotionFrame) -> tuple[np.ndarray | None, bool]:
         """Return ``(window, reset)`` for each new physical frame."""
         if self.last_sequence is None or self.last_device_us is None:
             self._restart(frame)
             return None, False
 
-        sequence_delta = (frame.sequence - self.last_sequence) & UINT32_MASK
-        time_delta_us = (frame.device_us - self.last_device_us) & UINT32_MASK
-        time_delta = time_delta_us / 1_000_000.0
-        discontinuity = (
-            sequence_delta == 0
-            or sequence_delta >= 0x80000000
-            or time_delta_us == 0
-            or time_delta > MAX_LIVE_GAP_SECONDS
-        )
+        discontinuity, time_delta = self._is_discontinuous(frame)
         if discontinuity:
             self._restart(frame)
             return None, True
@@ -182,28 +189,25 @@ def compute_features(
     if sample_hz <= 0 or not np.isfinite(window).all() or not np.isfinite(baseline_values).all():
         raise ValueError("feature input must be finite and sample_hz must be positive")
 
-    acceleration_delta = window[:, 3:] - baseline_values[3:]
-    acceleration_magnitude = np.linalg.norm(acceleration_delta, axis=1)
-
     orientation = window[:, :3]
-    unwrapped_orientation = np.column_stack(
-        [np.rad2deg(np.unwrap(np.deg2rad(orientation[:, i]))) for i in range(3)]
+    acceleration_magnitude = np.linalg.norm(
+        window[:, 3:] - baseline_values[3:], axis=1
     )
+    unwrapped_orientation = np.rad2deg(np.unwrap(np.deg2rad(orientation), axis=0))
     orientation_speed = np.linalg.norm(
         np.diff(unwrapped_orientation, axis=0) * sample_hz,
         axis=1,
     )
-    orientation_offset = _angle_delta_degrees(orientation, baseline_values[:3])
-    orientation_offset_magnitude = np.linalg.norm(orientation_offset, axis=1)
+    orientation_offset_magnitude = np.linalg.norm(
+        _angle_delta_degrees(orientation, baseline_values[:3]), axis=1
+    )
 
     return MotionFeatures(
-        acceleration_rms=float(np.sqrt(np.mean(np.square(acceleration_magnitude)))),
+        acceleration_rms=_rms(acceleration_magnitude),
         acceleration_peak=float(np.max(acceleration_magnitude)),
-        orientation_speed_rms=float(np.sqrt(np.mean(np.square(orientation_speed)))),
+        orientation_speed_rms=_rms(orientation_speed),
         orientation_speed_peak=float(np.max(orientation_speed)),
-        orientation_offset_rms=float(
-            np.sqrt(np.mean(np.square(orientation_offset_magnitude)))
-        ),
+        orientation_offset_rms=_rms(orientation_offset_magnitude),
     )
 
 

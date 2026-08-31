@@ -307,14 +307,15 @@ class OnsetTracker:
         self.fired_since_rest: set[str] = set()
 
     def update(self, current: str) -> str | None:
-        onset = None
         if current == "rest":
             self.fired_since_rest.clear()
-        elif current != self.previous and current not in self.fired_since_rest:
-            onset = current
+            self.previous = current
+            return None
+        is_new_onset = current != self.previous and current not in self.fired_since_rest
+        if is_new_onset:
             self.fired_since_rest.add(current)
         self.previous = current
-        return onset
+        return current if is_new_onset else None
 
 
 def live(port: str, profile_path: Path) -> None:

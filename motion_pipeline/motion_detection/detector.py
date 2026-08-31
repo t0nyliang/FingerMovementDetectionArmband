@@ -30,27 +30,33 @@ class MotionDetector:
 
     def update(self, features: MotionFeatures) -> tuple[float, str | None]:
         score = self.thresholds.score(features)
-        event: str | None = None
-
         if self.state == "rest":
-            self._rest_count = 0
-            if score >= 1.0:
-                self._motion_count += 1
-            else:
-                self._motion_count = 0
-            if self._motion_count >= self.on_frames:
-                self.state = "motion"
-                self._motion_count = 0
-                event = "motion_onset"
-        else:
-            self._motion_count = 0
-            if score < self.off_score:
-                self._rest_count += 1
-            else:
-                self._rest_count = 0
-            if self._rest_count >= self.off_frames:
-                self.state = "rest"
-                self._rest_count = 0
-                event = "motion_offset"
+            return score, self._update_rest_state(score)
+        return score, self._update_motion_state(score)
 
-        return score, event
+    @staticmethod
+    def _consecutive_count(count: int, condition: bool) -> int:
+        """Extend a run when its condition holds, otherwise restart it."""
+        return count + 1 if condition else 0
+
+    def _update_rest_state(self, score: float) -> str | None:
+        self._rest_count = 0
+        self._motion_count = self._consecutive_count(
+            self._motion_count, score >= 1.0
+        )
+        if self._motion_count < self.on_frames:
+            return None
+        self.state = "motion"
+        self._motion_count = 0
+        return "motion_onset"
+
+    def _update_motion_state(self, score: float) -> str | None:
+        self._motion_count = 0
+        self._rest_count = self._consecutive_count(
+            self._rest_count, score < self.off_score
+        )
+        if self._rest_count < self.off_frames:
+            return None
+        self.state = "rest"
+        self._rest_count = 0
+        return "motion_offset"
