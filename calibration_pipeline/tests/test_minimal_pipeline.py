@@ -174,6 +174,37 @@ def test_timed_capture_resamples_a_slower_sensor_to_fifty_hz() -> None:
     assert np.isfinite(resampled).all()
 
 
+def test_timed_capture_collapses_duplicate_host_timestamps() -> None:
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+
+    class BufferedSensor:
+        def __init__(self) -> None:
+            self.index = 0
+
+        def discard_pending(self) -> None:
+            pass
+
+        def read(self) -> np.ndarray:
+            self.index += 1
+            # Two queued reads share each coarse clock tick.
+            if self.index % 2 == 0:
+                clock.now += 0.02
+            return np.full(CHANNEL_COUNT, self.index, dtype=float)
+
+    capture, times = read_for_duration(BufferedSensor(), 0.06, clock)
+    assert len(capture) == len(times)
+    assert len(times) >= 2
+    assert np.all(np.diff(times) > 0)
+    assert capture[-1, 0] == 6
+
+
 def training_model() -> dict:
     features = []
     labels = []

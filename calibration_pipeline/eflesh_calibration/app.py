@@ -56,8 +56,18 @@ def read_for_duration(
     samples: list[np.ndarray] = []
     sample_times: list[float] = []
     while clock() - started < duration_s:
-        samples.append(sensor.read())
-        sample_times.append(clock() - started)
+        sample = sensor.read()
+        sample_time = clock() - started
+        # A serial read can return immediately when several frames are already
+        # buffered.  On clocks with a coarse resolution that gives consecutive
+        # frames the same timestamp, which ``np.interp`` cannot accept. Keep
+        # the newest frame for that instant instead of passing duplicates on to
+        # the resampler.
+        if sample_times and sample_time <= sample_times[-1]:
+            samples[-1] = sample
+            continue
+        samples.append(sample)
+        sample_times.append(sample_time)
     if len(samples) < 2:
         raise RuntimeError("not enough sensor frames received during capture")
     return np.stack(samples), np.asarray(sample_times, dtype=float)
